@@ -9,6 +9,6 @@ DESTDIR = build
 TARGET = spike
 HEADERS += spike.h x11.h
 SOURCES += spike.cpp x11.cpp
-#RESOURCES += spike.qrc
+RESOURCES += spike.qrc
 #PKGCONFIG += dbus-1
 QMAKE_CXXFLAGS += -std=gnu++11

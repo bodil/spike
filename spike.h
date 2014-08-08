@@ -1,8 +1,9 @@
 #include <QWidget>
 #include <QIcon>
+#include <QAbstractListModel>
 
 class QCommandLineParser;
-class QLabel;
+class QListView;
 
 class Entry {
 public:
@@ -12,6 +13,20 @@ public:
   QString exec;
   QIcon icon;
   QString extra;
+};
+
+class EntryModel : public QAbstractListModel {
+  Q_OBJECT
+
+public:
+  explicit EntryModel(const QList<Entry>&, const QColor&, QObject* parent = 0);
+
+  int rowCount(const QModelIndex& = QModelIndex()) const;
+  QVariant data(const QModelIndex& = QModelIndex(), int = Qt::DisplayRole) const;
+
+private:
+  QList<Entry> entries;
+  QColor error;
 };
 
 class Launcher : public QObject {
@@ -50,7 +65,8 @@ protected:
   void keyPressEvent(QKeyEvent*);
 
 private:
-  QLabel* text;
+  QListView* list;
+  EntryModel* model;
   QList<Entry> items, activeItems;
   QString current;
   int index;

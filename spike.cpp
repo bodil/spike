@@ -8,7 +8,7 @@
 #include <QProcessEnvironment>
 #include <QKeyEvent>
 #include <QRegExp>
-#include <QLabel>
+#include <QListView>
 #include <QProcess>
 #include <QIcon>
 
@@ -69,10 +69,12 @@ QString matchKey(const QString& key, const QString& s) {
 }
 
 Entry parseApplication(const QString& data) {
-  QString name, exec, icon, read;
+  QString name, exec, icon, type, read;
   QStringList lines = data.split("\n");
   QStringList::const_iterator i;
   for (i = lines.constBegin(); i != lines.constEnd(); ++i) {
+    read = matchKey("Type", *i);
+    if (!read.isNull()) type = read;
     read = matchKey("Name", *i);
     if (!read.isNull()) name = read;
     read = matchKey("Exec", *i);
@@ -80,11 +82,19 @@ Entry parseApplication(const QString& data) {
     read = matchKey("Icon", *i);
     if (!read.isNull()) icon = read;
   }
-  return Entry(name, exec, icon.isEmpty() ? QIcon() : QIcon(icon));
+  if (type.toLower() != "application") {
+    return Entry("", "", QIcon());
+  } else {
+    return Entry(name, exec, icon.isEmpty() ? QIcon() : QIcon(icon));
+  }
 }
 
 QStringList applicationsInDir(const QDir& dir) {
   return dir.entryList({"*.desktop"}, QDir::Files | QDir::Readable, QDir::Name);
+}
+
+bool entryLessThan(Entry a, Entry b) {
+  return a.name < b.name;
 }
 
 QList<Entry> applicationsOnPath(const QStringList& path) {
@@ -101,8 +111,10 @@ QList<Entry> applicationsOnPath(const QStringList& path) {
   files = fileSet.toList();
   QList<Entry> entries;
   for (i = files.constBegin(); i != files.constEnd(); ++i) {
-    entries += parseApplication(readFile(*i));
+    Entry e = parseApplication(readFile(*i));
+    if (!e.name.isEmpty()) entries += e;
   }
+  std::sort(entries.begin(), entries.end(), entryLessThan);
   return entries;
 }
 
@@ -116,6 +128,36 @@ Entry::Entry(const QString& name, const QString& exec, const QIcon& icon)
   extra = exec.split("/").last();
 }
 
+EntryModel::EntryModel(const QList<Entry>& newEntries, const QColor& errorColor, QObject* parent)
+  : QAbstractListModel(parent)
+  , entries(newEntries)
+  , error(errorColor)
+{}
+
+int EntryModel::rowCount(const QModelIndex&) const {
+  return entries.size();
+}
+
+QVariant EntryModel::data(const QModelIndex& index, int role) const {
+  Entry e = entries[index.row()];
+  if (e.name.isEmpty() && e.exec.isEmpty()) {
+    // Error message
+    if (role == Qt::DisplayRole)
+      return "No match";
+    if (role == Qt::DecorationRole)
+      return QIcon(":/error.png");
+    if (role == Qt::ForegroundRole)
+      return QBrush(error);
+    return QVariant();
+  } else {
+    if (role == Qt::DisplayRole)
+      return e.name;
+    if (role == Qt::DecorationRole)
+      return e.icon;
+    return QVariant();
+  }
+}
+
 // -- Selector
 
 Selector::Selector(const QCommandLineParser& _opts, QWidget* parent)
@@ -123,14 +165,26 @@ Selector::Selector(const QCommandLineParser& _opts, QWidget* parent)
             Qt::NoDropShadowWindowHint |
             Qt::WindowDoesNotAcceptFocus |
             Qt::FramelessWindowHint)
-  , text(new QLabel(this))
+  , list(new QListView(this))
   , opts(_opts)
 {
   uint margin = opts.value("margin").toUInt();
+  uint fontSize = QFontMetrics(QApplication::font()).height();
+
+  model = new EntryModel({}, QColor(opts.value("error")), this);
+
+  list->setFlow(QListView::LeftToRight);
+  list->setSelectionMode(QAbstractItemView::SingleSelection);
+  list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  list->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  list->setSpacing(margin);
+  list->setIconSize(QSize(fontSize, fontSize));
+  list->setFrameStyle(QFrame::NoFrame);
+  list->setMaximumHeight(QFontMetrics(QApplication::font()).height() + (margin * 2));
 
   QHBoxLayout* l = new QHBoxLayout;
-  l->setContentsMargins(margin, margin, margin, margin);
-  l->addWidget(text);
+  l->setContentsMargins(0, 0, 0, 0);
+  l->addWidget(list);
   setLayout(l);
 
   X11::setProp(this, "_NET_WM_DESKTOP", -1);
@@ -213,15 +267,17 @@ void Selector::updateSelection() {
     while (index >= activeItems.size()) index -= activeItems.size();
     while (index < 0) index += activeItems.size();
   } else {
-    text->setText(QString("<b style=\"color: %1\">No match</b>").arg(opts.value("error")));
+    delete model;
+    model = new EntryModel({Entry("", "", QIcon())}, QColor(opts.value("error")), this);
+    list->setModel(model);
     return;
   }
 
-  QStringList i(entryNames(activeItems));
-  i[index] = QString("<b style=\"color: %1; background-color: %2\">")
-    .arg(opts.value("active")).arg(opts.value("activebg"))
-    + i[index] + "</b>";
-  text->setText(i.join(" "));
+  delete model;
+  model = new EntryModel(activeItems, QColor(opts.value("error")), this);
+  list->setModel(model);
+  list->selectionModel()->setCurrentIndex(model->index(index, 0),
+                                          QItemSelectionModel::SelectCurrent);
 }
 
 void Selector::keyPressEvent(QKeyEvent* event) {
@@ -318,8 +374,11 @@ int main(int argc, char* argv[]) {
   a.setFont(QFont(opts.value("font")));
 
   QPalette p;
+  p.setColor(QPalette::Base, QColor(opts.value("background")));
+  p.setColor(QPalette::Text, QColor(opts.value("text")));
+  p.setColor(QPalette::Highlight, QColor(opts.value("activebg")));
+  p.setColor(QPalette::HighlightedText, QColor(opts.value("active")));
   p.setColor(QPalette::Window, QColor(opts.value("background")));
-  p.setColor(QPalette::WindowText, QColor(opts.value("text")));
   a.setPalette(p);
 
   Selector spike(opts);

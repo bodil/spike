@@ -1,7 +1,18 @@
 #include <QWidget>
+#include <QIcon>
 
 class QCommandLineParser;
 class QLabel;
+
+class Entry {
+public:
+  explicit Entry(const QString& name, const QString& exec, const QIcon& icon);
+
+  QString name;
+  QString exec;
+  QIcon icon;
+  QString extra;
+};
 
 class Launcher : public QObject {
   Q_OBJECT
@@ -10,7 +21,7 @@ public:
   explicit Launcher(QObject* = 0);
 
 public slots:
-  void launch(const QString&);
+  void launch(const Entry&);
 
 signals:
   void launched();
@@ -27,12 +38,12 @@ public:
   void resize(int, Qt::Edge);
 
 public slots:
-  void select(const QStringList&);
+  void select(const QList<Entry>&);
   void endSelection();
   void updateSelection();
 
 signals:
-  void selected(const QString&);
+  void selected(const Entry&);
   void cancelled();
 
 protected:
@@ -40,7 +51,7 @@ protected:
 
 private:
   QLabel* text;
-  QStringList items, activeItems;
+  QList<Entry> items, activeItems;
   QString current;
   int index;
   const QCommandLineParser& opts;

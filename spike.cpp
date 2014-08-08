@@ -10,6 +10,7 @@
 #include <QRegExp>
 #include <QLabel>
 #include <QProcess>
+#include <QIcon>
 
 #include <iostream>
 #include <algorithm>
@@ -18,20 +19,26 @@
 #include "x11.h"
 #include "spike.h"
 
+// -- Utilities
+
 QStringList filesInDir(const QDir& dir) {
   return dir.entryList({}, QDir::Files | QDir::Executable, QDir::Name);
 }
 
-QStringList filesOnPath(const QStringList& path) {
+QList<Entry> filesOnPath(const QStringList& path) {
   QStringList files;
   QStringList::const_iterator i;
   for (i = path.constBegin(); i != path.constEnd(); ++i) {
     files.append(filesInDir(QDir(*i)));
   }
   QSet<QString> fileSet(QSet<QString>::fromList(files));
-  QStringList fileList(fileSet.toList());
-  fileList.sort(Qt::CaseInsensitive);
-  return fileList;
+  files = fileSet.toList();
+  files.sort(Qt::CaseInsensitive);
+  QList<Entry> entries;
+  for (i = files.constBegin(); i != files.constEnd(); ++i) {
+    entries.append(Entry(*i, *i, QIcon()));
+  }
+  return entries;
 }
 
 QStringList getEnvPath() {
@@ -48,6 +55,68 @@ QString readFile(const QString& path) {
   QByteArray result(file.readAll());
   return QString(result);
 }
+
+// -- XDG
+
+QStringList getXdgApplicationPaths() {
+  QString env(QProcessEnvironment::systemEnvironment().value("XDG_DATA_DIRS"));
+  return env.split(":").replaceInStrings(QRegExp("$"), "/applications");
+}
+
+QString matchKey(const QString& key, const QString& s) {
+  QRegExp m(QString("^%1\\s*=\\s*(.*)$").arg(key));
+  return m.exactMatch(s) ? m.capturedTexts()[1] : QString();
+}
+
+Entry parseApplication(const QString& data) {
+  QString name, exec, icon, read;
+  QStringList lines = data.split("\n");
+  QStringList::const_iterator i;
+  for (i = lines.constBegin(); i != lines.constEnd(); ++i) {
+    read = matchKey("Name", *i);
+    if (!read.isNull()) name = read;
+    read = matchKey("Exec", *i);
+    if (!read.isNull()) exec = read;
+    read = matchKey("Icon", *i);
+    if (!read.isNull()) icon = read;
+  }
+  return Entry(name, exec, icon.isEmpty() ? QIcon() : QIcon(icon));
+}
+
+QStringList applicationsInDir(const QDir& dir) {
+  return dir.entryList({"*.desktop"}, QDir::Files | QDir::Readable, QDir::Name);
+}
+
+QList<Entry> applicationsOnPath(const QStringList& path) {
+  QStringList files;
+  QStringList::const_iterator i, j;
+  for (i = path.constBegin(); i != path.constEnd(); ++i) {
+    QDir dir(*i);
+    QStringList appsInDir = applicationsInDir(dir);
+    for (j = appsInDir.constBegin(); j != appsInDir.constEnd(); ++j) {
+      files += dir.filePath(*j);
+    }
+  }
+  QSet<QString> fileSet(QSet<QString>::fromList(files));
+  files = fileSet.toList();
+  QList<Entry> entries;
+  for (i = files.constBegin(); i != files.constEnd(); ++i) {
+    entries += parseApplication(readFile(*i));
+  }
+  return entries;
+}
+
+// -- Entry
+
+Entry::Entry(const QString& name, const QString& exec, const QIcon& icon)
+  : name(name)
+  , exec(exec)
+  , icon(icon)
+{
+  extra = exec.split("/").last();
+}
+
+// -- Selector
 
 Selector::Selector(const QCommandLineParser& _opts, QWidget* parent)
   : QWidget(parent,
@@ -104,7 +173,7 @@ void Selector::resize(int height, Qt::Edge edge) {
   show();
 }
 
-void Selector::select(const QStringList& newItems) {
+void Selector::select(const QList<Entry>& newItems) {
   items = newItems;
   current = "";
   index = 0;
@@ -117,15 +186,38 @@ void Selector::endSelection() {
   close();
 }
 
+QList<Entry> filterEntries(const QList<Entry>& entries, const QRegExp& re) {
+  QList<Entry> filtered;
+  QList<Entry>::const_iterator i;
+  for (i = entries.constBegin(); i != entries.constEnd(); ++i) {
+    if (re.exactMatch((*i).name) ||
+        (!(*i).extra.isEmpty() && re.exactMatch((*i).extra))) filtered += *i;
+  }
+  return filtered;
+}
+
+QStringList entryNames(const QList<Entry>& entries) {
+  QStringList names;
+  QList<Entry>::const_iterator i;
+  for (i = entries.constBegin(); i != entries.constEnd(); ++i) {
+    names += (*i).name;
+  }
+  return names;
+}
+
 void Selector::updateSelection() {
-  activeItems = items.filter(QRegExp("^" + QRegExp::escape(current)));
+  activeItems = filterEntries(items, QRegExp("^" + QRegExp::escape(current) + ".*",
+                                             Qt::CaseInsensitive));
 
   if (activeItems.size() > 0) {
     while (index >= activeItems.size()) index -= activeItems.size();
     while (index < 0) index += activeItems.size();
+  } else {
+    text->setText(QString("<b style=\"color: %1\">No match</b>").arg(opts.value("error")));
+    return;
   }
 
-  QStringList i(activeItems);
+  QStringList i(entryNames(activeItems));
   i[index] = QString("<b style=\"color: %1; background-color: %2\">")
     .arg(opts.value("active")).arg(opts.value("activebg"))
     + i[index] + "</b>";
@@ -141,8 +233,10 @@ void Selector::keyPressEvent(QKeyEvent* event) {
     endSelection();
     return;
   } else if (key == Qt::Key_Return) {
-    emit selected(activeItems[index]);
-    endSelection();
+    if (activeItems.size() > 0) {
+      emit selected(activeItems[index]);
+      endSelection();
+    }
     return;
   } else if (key == Qt::Key_Backspace && mod == Qt::NoModifier) {
     current = current.left(std::max(0, current.size() - 1));
@@ -157,16 +251,21 @@ void Selector::keyPressEvent(QKeyEvent* event) {
   updateSelection();
 }
 
+// -- Launcher
+
 Launcher::Launcher(QObject* parent)
   : QObject(parent)
 {}
 
-void Launcher::launch(const QString& program) {
-  if (QProcess::startDetached(program))
+void Launcher::launch(const Entry& program) {
+  std::cout << "Launching '" << program.exec.toLocal8Bit().data() << "'...";
+  if (QProcess::startDetached(program.exec))
     emit launched();
   else
     emit failed();
 }
+
+// -- Main
 
 static void sigint_handler(int) {
   QApplication::instance()->exit(0);
@@ -191,6 +290,8 @@ int main(int argc, char* argv[]) {
   opts.setApplicationDescription("An application launcher.");
   opts.addHelpOption();
   opts.addVersionOption();
+  QCommandLineOption sourceOption({"s", "source"}, "Application source [path, xdg]", "source", "xdg");
+  opts.addOption(sourceOption);
   QCommandLineOption fontOption({"f", "font"}, "Application font", "font", "sans-serif");
   opts.addOption(fontOption);
   QCommandLineOption bgOption({"b", "background"}, "Background colour", "background",
@@ -205,6 +306,9 @@ int main(int argc, char* argv[]) {
   QCommandLineOption activeBgOption({"g", "activebg"}, "Active item background colour",
                                     "activebg", "#171717");
   opts.addOption(activeBgOption);
+  QCommandLineOption errorOption({"e", "error"}, "Error message colour",
+                                    "error", "#E2434C");
+  opts.addOption(errorOption);
   QCommandLineOption marginOption({"m", "margin"}, "Window margin", "margin", "4");
   opts.addOption(marginOption);
   opts.process(a);
@@ -222,9 +326,18 @@ int main(int argc, char* argv[]) {
   spike.resize(QFontMetrics(a.font()).height() + margin * 2, Qt::BottomEdge);
 
   Launcher launcher;
-
   QObject::connect(&spike, &Selector::selected, &launcher, &Launcher::launch);
-  spike.select(filesOnPath(getEnvPath()));
+
+  if (opts.value("source") == "path") {
+    spike.select(filesOnPath(getEnvPath()));
+  } else if (opts.value("source") == "xdg") {
+    spike.select(applicationsOnPath(getXdgApplicationPaths()));
+  } else {
+    std::cout << "Unknown application source '"
+              << opts.value("source").toLocal8Bit().data()
+              << "'.\n";
+    exit(1);
+  }
 
   return a.exec();
 }

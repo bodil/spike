@@ -367,6 +367,10 @@ int main(int argc, char* argv[]) {
   opts.addOption(errorOption);
   QCommandLineOption marginOption({"m", "margin"}, "Window margin", "margin", "4");
   opts.addOption(marginOption);
+  QCommandLineOption positionOption({"p", "position"},
+                                    "Window position [top, bottom]",
+                                    "position", "bottom");
+  opts.addOption(positionOption);
   opts.process(a);
 
   uint margin = opts.value("margin").toUInt();
@@ -381,8 +385,12 @@ int main(int argc, char* argv[]) {
   p.setColor(QPalette::Window, QColor(opts.value("background")));
   a.setPalette(p);
 
+  Qt::Edge edge;
+  if (opts.value("position") == "top") edge = Qt::TopEdge;
+  else edge = Qt::BottomEdge;
+
   Selector spike(opts);
-  spike.resize(QFontMetrics(a.font()).height() + margin * 2, Qt::BottomEdge);
+  spike.resize(QFontMetrics(a.font()).height() + margin * 2, edge);
 
   Launcher launcher;
   QObject::connect(&spike, &Selector::selected, &launcher, &Launcher::launch);

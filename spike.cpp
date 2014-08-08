@@ -18,6 +18,8 @@
 
 #include "x11.h"
 #include "spike.h"
+#include "entry.h"
+#include "history.h"
 
 // -- Utilities
 
@@ -33,7 +35,6 @@ QList<Entry> filesOnPath(const QStringList& path) {
   }
   QSet<QString> fileSet(QSet<QString>::fromList(files));
   files = fileSet.toList();
-  files.sort(Qt::CaseInsensitive);
   QList<Entry> entries;
   for (i = files.constBegin(); i != files.constEnd(); ++i) {
     entries.append(Entry(*i, *i, QIcon()));
@@ -93,10 +94,6 @@ QStringList applicationsInDir(const QDir& dir) {
   return dir.entryList({"*.desktop"}, QDir::Files | QDir::Readable, QDir::Name);
 }
 
-bool entryLessThan(Entry a, Entry b) {
-  return a.name < b.name;
-}
-
 QList<Entry> applicationsOnPath(const QStringList& path) {
   QStringList files;
   QStringList::const_iterator i, j;
@@ -114,48 +111,7 @@ QList<Entry> applicationsOnPath(const QStringList& path) {
     Entry e = parseApplication(readFile(*i));
     if (!e.name.isEmpty()) entries += e;
   }
-  std::sort(entries.begin(), entries.end(), entryLessThan);
   return entries;
-}
-
-// -- Entry
-
-Entry::Entry(const QString& name, const QString& exec, const QIcon& icon)
-  : name(name)
-  , exec(exec)
-  , icon(icon)
-{
-  extra = exec.split("/").last();
-}
-
-EntryModel::EntryModel(const QList<Entry>& newEntries, const QColor& errorColor, QObject* parent)
-  : QAbstractListModel(parent)
-  , entries(newEntries)
-  , error(errorColor)
-{}
-
-int EntryModel::rowCount(const QModelIndex&) const {
-  return entries.size();
-}
-
-QVariant EntryModel::data(const QModelIndex& index, int role) const {
-  Entry e = entries[index.row()];
-  if (e.name.isEmpty() && e.exec.isEmpty()) {
-    // Error message
-    if (role == Qt::DisplayRole)
-      return "No match";
-    if (role == Qt::DecorationRole)
-      return QIcon(":/error.png");
-    if (role == Qt::ForegroundRole)
-      return QBrush(error);
-    return QVariant();
-  } else {
-    if (role == Qt::DisplayRole)
-      return e.name;
-    if (role == Qt::DecorationRole)
-      return e.icon;
-    return QVariant();
-  }
 }
 
 // -- Selector
@@ -228,7 +184,8 @@ void Selector::resize(int height, Qt::Edge edge) {
 }
 
 void Selector::select(const QList<Entry>& newItems) {
-  items = newItems;
+  History history(opts.value("history"));
+  items = history.sort(newItems);
   current = "";
   index = 0;
   updateSelection();
@@ -290,6 +247,7 @@ void Selector::keyPressEvent(QKeyEvent* event) {
     return;
   } else if (key == Qt::Key_Return) {
     if (activeItems.size() > 0) {
+      History(opts.value("history")).insert(activeItems[index].exec);
       emit selected(activeItems[index]);
       endSelection();
     }
@@ -350,20 +308,20 @@ int main(int argc, char* argv[]) {
   opts.addOption(sourceOption);
   QCommandLineOption fontOption({"f", "font"}, "Application font", "font", "sans-serif");
   opts.addOption(fontOption);
-  QCommandLineOption bgOption({"b", "background"}, "Background colour", "background",
+  QCommandLineOption bgOption({"b", "background"}, "Background colour", "colour",
                               "#171717");
   opts.addOption(bgOption);
-  QCommandLineOption fgOption({"t", "text"}, "Text colour", "text",
+  QCommandLineOption fgOption({"t", "text"}, "Text colour", "colour",
                               "#F6F3E8");
   opts.addOption(fgOption);
-  QCommandLineOption activeOption({"a", "active"}, "Active item colour", "active",
+  QCommandLineOption activeOption({"a", "active"}, "Active item colour", "colour",
                                   "#EA9847");
   opts.addOption(activeOption);
   QCommandLineOption activeBgOption({"g", "activebg"}, "Active item background colour",
-                                    "activebg", "#171717");
+                                    "colour", "#171717");
   opts.addOption(activeBgOption);
   QCommandLineOption errorOption({"e", "error"}, "Error message colour",
-                                    "error", "#E2434C");
+                                    "colour", "#E2434C");
   opts.addOption(errorOption);
   QCommandLineOption marginOption({"m", "margin"}, "Window margin", "margin", "4");
   opts.addOption(marginOption);
@@ -371,6 +329,10 @@ int main(int argc, char* argv[]) {
                                     "Window position [top, bottom]",
                                     "position", "bottom");
   opts.addOption(positionOption);
+  QCommandLineOption historyOption({"i", "history"},
+                                   "Location of history file",
+                                   "file", QDir::home().filePath(".spike.history"));
+  opts.addOption(historyOption);
   opts.process(a);
 
   uint margin = opts.value("margin").toUInt();
